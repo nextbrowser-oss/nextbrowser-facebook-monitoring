@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1073" height="402" viewBox="0 0 1073 402" role="img" aria-label="Example facebook-monitor output: group posts and comments that name a keyword or mention the account, ranked by urgency, each with its group and a direct link">
+  <rect x="0.5" y="0.5" width="1072" height="401" rx="12" fill="#0b1120" stroke="#1f2937"/>
+  <path d="M12.5 0.5h1048a12 12 0 0 1 12 12v28h-1072v-28a12 12 0 0 1 12-12z" fill="#111827"/>
+  <circle cx="24" cy="20" r="6" fill="#ff5f57"/>
+  <circle cx="44" cy="20" r="6" fill="#febc2e"/>
+  <circle cx="64" cy="20" r="6" fill="#28c840"/>
+  <text x="536.5" y="25" text-anchor="middle" fill="#6b7280" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">facebook-monitor — sample output</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#e5e7eb">
+    <text x="28" y="72"><tspan fill="#2dd4bf">$</tspan> facebook-monitor run --profile acme --groups acme.users,indiesaas --keywords acme</text>
+    <text x="28" y="98" xml:space="preserve"><tspan fill="#6b7280">09:00</tspan>  <tspan fill="#60a5fa">signed in</tspan> as <tspan fill="#c4b5fd">Dana Reyes</tspan></text>
+    <text x="28" y="124" xml:space="preserve"><tspan fill="#6b7280">09:00</tspan>  <tspan fill="#94a3b8">pass</tspan> <tspan fill="#c4b5fd">Dana Reyes</tspan>: starting line: 2 groups, 5 matches</text>
+    <text x="28" y="150" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#f87171">HIGH</tspan>    <tspan fill="#c4b5fd">Mila Novak</tspan> posted in <tspan fill="#5eead4">Acme Users</tspan>: Is Acme down for anyone else? Can't log in since noon</text>
+    <text x="28" y="176" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#a7f3d0">[Says "can't log in" · Asks a question]</tspan>  <tspan fill="#64748b">https://www.facebook.com/groups/acme.users/posts/1029384756/</tspan></text>
+    <text x="28" y="202" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#f87171">HIGH</tspan>    <tspan fill="#c4b5fd">Kim Ito</tspan> mentioned you in a comment in <tspan fill="#5eead4">Acme Users</tspan>: <tspan fill="#c4b5fd">Dana Reyes</tspan> can you check the billing export?</text>
+    <text x="28" y="228" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#a7f3d0">[Mentions you · Asks a question]</tspan>  <tspan fill="#64748b">https://www.facebook.com/groups/acme.users/posts/1029384701/?comment_id=1048576</tspan></text>
+    <text x="28" y="254" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#fbbf24">MEDIUM</tspan>  <tspan fill="#c4b5fd">Ana Lima</tspan> posted in <tspan fill="#5eead4">Indie SaaS Founders</tspan>: Looking for an alternative to Acme for invoicing, any suggestions?</text>
+    <text x="28" y="280" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#a7f3d0">[Asks a question · Asks for a recommendation]</tspan>  <tspan fill="#64748b">https://www.facebook.com/groups/indiesaas/posts/2047113988/</tspan></text>
+    <text x="28" y="306" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#94a3b8">low</tspan>     <tspan fill="#c4b5fd">Bo Chen</tspan> commented on <tspan fill="#c4b5fd">Sam Ortiz</tspan>'s post in <tspan fill="#5eead4">Indie SaaS Founders</tspan>: We moved to acme last year, no complaints</text>
+    <text x="28" y="332" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#64748b">https://www.facebook.com/groups/indiesaas/posts/2047113920/?comment_id=2051000</tspan></text>
+    <text x="28" y="358" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#94a3b8">pass</tspan> <tspan fill="#c4b5fd">Dana Reyes</tspan>: 2 groups: 4 new (2 urgent) of 9 matches; 2 threads read</text>
+  </g>
+</svg>
