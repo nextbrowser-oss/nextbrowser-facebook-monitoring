@@ -28,6 +28,11 @@ export class FakeFacebook implements MonitorBrowser {
   checkpoint = false;
   /** The block notice every page shows, when set. */
   blocked = "";
+  /** No sign-in wall is drawn, yet there is no session cookie and no account
+   *  button: a public group shown to a visitor without its login dialog. */
+  anonymous = false;
+  /** A read whose label this is throws, as it would in a tab that crashed. */
+  failOn = "";
   id = "100001";
   name = "Dana Reyes";
   groups: Record<string, FakeGroup> = {};
@@ -48,6 +53,7 @@ export class FakeFacebook implements MonitorBrowser {
 
   async evaluate<T>(_script: string, label = ""): Promise<T> {
     this.labels.push(label);
+    if (this.failOn && label === this.failOn) throw new Error("the tab crashed");
     return this.answer(label) as T;
   }
 
@@ -105,14 +111,16 @@ export class FakeFacebook implements MonitorBrowser {
           gate,
         } satisfies PageHealth;
       }
-      case "identity":
+      case "identity": {
+        const session = this.signedIn && !this.anonymous;
         return {
           url: this.url,
           gate,
-          id: this.signedIn ? this.id : "",
-          name: this.signedIn ? this.name : "",
-          chrome: this.signedIn,
+          id: session ? this.id : "",
+          name: session ? this.name : "",
+          chrome: session,
         } satisfies IdentitySnapshot;
+      }
       case "feed":
       case "mobile-feed":
         return { url: this.url, gate, feed: this.drawn().length > 0, group_name: at.group?.name ?? "", posts: this.drawn() } satisfies FeedSnapshot;
@@ -165,6 +173,7 @@ export function rawPost(group: string, author: string, text: string, patch: Part
     reactions_text: "",
     shares_text: "",
     action_bar: true,
+    alt_id: "",
     ...patch,
   };
 }

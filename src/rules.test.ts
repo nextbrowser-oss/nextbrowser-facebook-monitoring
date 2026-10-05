@@ -207,17 +207,29 @@ describe("state", () => {
     expect(normalizeSettings({}).urgentTerms).toEqual(DEFAULT_URGENT_TERMS);
   });
 
+  it("takes a setting left empty as its default, not as zero", () => {
+    const settings = normalizeSettings({ maxItemAgeMs: null, maxCommentReads: null, maxScrolls: "" } as never);
+    expect(settings).toMatchObject({ maxItemAgeMs: 72 * HOUR, maxCommentReads: 5, maxScrolls: 3 });
+    expect(normalizeSettings({ maxItemAgeMs: 0, maxCommentReads: 0 })).toMatchObject({ maxItemAgeMs: 0, maxCommentReads: 0 });
+  });
+
   it("accepts whatever was on disk", () => {
     expect(normalizeState(null)).toEqual(emptyState());
     const state = normalizeState({
       account: { id: "100001", name: "Dana Reyes", signedIn: true, checkedAt: 5 },
       sources: { "group:acme.users": { since: 1, name: "Acme Users" }, "group:bad group": { since: 1 }, other: { since: 1 } },
-      posts: { "7100000000000001": { group: "acme.users", own: false, comments: 2, checkedAt: 1 }, junk: { comments: 1 } },
+      posts: {
+        "7100000000000001": { group: "acme.users", own: false, comments: 2, checkedAt: 1 },
+        "7100000000000002": { group: "acme.users", own: false, comments: 4, shortReads: 2, checkedAt: 2 },
+        junk: { comments: 1 },
+      },
       seen: ["post:1", 2],
     });
     expect(state.account).toEqual({ id: "100001", name: "Dana Reyes", signedIn: true, checkedAt: 5 });
     expect(Object.keys(state.sources)).toEqual(["group:acme.users"]);
-    expect(Object.keys(state.posts)).toEqual(["7100000000000001"]);
+    expect(Object.keys(state.posts)).toEqual(["7100000000000001", "7100000000000002"]);
+    expect(state.posts["7100000000000001"]?.shortReads).toBeUndefined();
+    expect(state.posts["7100000000000002"]?.shortReads).toBe(2);
     expect(state.seen).toEqual(["post:1"]);
   });
 });

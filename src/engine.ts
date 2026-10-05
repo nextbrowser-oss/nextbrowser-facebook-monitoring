@@ -82,6 +82,11 @@ const MAX_STALLS = 2;
  *  feed's wait: a post with its comments collapsed draws none, and that is not
  *  worth twenty seconds. */
 const THREAD_WAIT_MS = 12_000;
+/** How many reads in a row may draw fewer new comments than a post's count
+ *  grew by before the count is taken as read. Facebook's count takes in
+ *  replies, which are not read, and comments its "Most relevant" order leaves
+ *  out; neither will ever be drawn, and a post must not be opened forever. */
+const MAX_SHORT_READS = 3;
 
 export interface PassDeps {
   browser: MonitorBrowser;
@@ -139,6 +144,9 @@ export interface PassSummary {
   commentReads: number;
   commentReadsDeferred: number;
   stopped: boolean;
+  /** Something unexpected ended the pass early — not Facebook's screens, but
+   *  an error in the browser or the engine. The notes say what. */
+  failed: boolean;
   notes: string[];
 }
 
@@ -223,8 +231,11 @@ class Pass {
   /** What was seen before this pass: the feed position rule needs the line
    *  as it was, not as this pass moves it. */
   private readonly seenBefore: ReadonlySet<string>;
+  /** Every key seen, oldest first. A key seen again moves to the newest end,
+   *  so what stays in view — a pinned post, a long-lived thread — is never
+   *  the first to be cut when the list is trimmed, and never announced
+   *  twice. */
   private readonly seen: Set<string>;
-  private readonly seenOrder: string[];
   private readonly sources: Record<string, SourceState> = {};
   private readonly posts: Record<string, PostWatch>;
   private readonly planned = new Set<string>();
@@ -252,6 +263,7 @@ class Pass {
     commentReads: 0,
     commentReadsDeferred: 0,
     stopped: false,
+    failed: false,
     notes: [],
   };
 
@@ -264,9 +276,8 @@ class Pass {
     this.log = makeLogger(deps.log, this.now);
     this.at = this.now();
     this.state = normalizeState(deps.state);
-    this.seenOrder = [...this.state.seen];
-    this.seenBefore = new Set(this.seenOrder);
-    this.seen = new Set(this.seenOrder);
+    this.seenBefore = new Set(this.state.seen);
+    this.seen = new Set(this.state.seen);
     this.posts = { ...this.state.posts };
     const settings = this.state.settings;
     this.keywords = keywordMatcher(settings.keywords);
@@ -296,6 +307,7 @@ class Pass {
         this.summary.blocked = error.message;
         this.note(error.message);
       } else {
+        this.summary.failed = true;
         this.note(`The pass failed: ${errorText(error)}`);
         this.log("pass_error", { error: errorText(error) });
       }
@@ -321,6 +333,10 @@ class Pass {
     const me = await this.browser.evaluate<IdentitySnapshot>(identityScript(), "identity");
     this.log("identity", { url: me.url, gate: me.gate, id: me.id, name: me.name, chrome: me.chrome });
     this.checkGate(me.gate);
+    // No session cookie and no account button: Facebook drew a public group
+    // to a visitor and left out the login dialog that usually says so.
+    // checkAccount reads it the same way.
+    if (!me.id && !me.chrome) throw new SignedOut();
     const previous = this.state.account;
     const id = me.id || previous?.id;
     const name = me.name || (me.id && me.id !== previous?.id ? undefined : previous?.name);
@@ -443,7 +459,7 @@ class Pass {
       }
       if (posts.length === 0 && snapshot.diag) this.log("feed_empty_read", { url: snapshot.url, diag: snapshot.diag });
       if (baseline || posts.length === 0) break;
-      if (posts.filter((post) => this.seenBefore.has(post.key)).length >= KNOWN_TO_STOP) break;
+      if (posts.filter((post) => this.seenBeforePass(post)).length >= KNOWN_TO_STOP) break;
       if (scrolls >= this.state.settings.maxScrolls) break;
       this.checkStop();
       const scroll = await this.browser.evaluate<ScrollState>(scrollScript(), "scroll");
@@ -475,7 +491,7 @@ class Pass {
     const previous = this.state.sources[key];
     const baseline = !previous;
     const since = previous?.since ?? this.at;
-    const line = posts.findIndex((post) => this.seenBefore.has(post.key));
+    const line = posts.findIndex((post) => this.seenBeforePass(post));
     const source: ItemSource = { kind: "group_post", name: group.name, group: group.id };
     const fresh: Match[] = [];
     const plans: ThreadPlan[] = [];
@@ -487,13 +503,16 @@ class Pass {
 
     for (const [index, post] of posts.entries()) {
       const own = isOwn(post, this.account);
-      const isNew = !baseline && !this.seenBefore.has(post.key) && this.freshPost(post.range, index, line, since, readAt);
+      const isNew = !baseline && !this.seenBeforePass(post) && this.freshPost(post.range, index, line, since, readAt);
       const mention = !own && mentionsAccount(post.text, post.mentions, this.account);
       const keywords = this.keywords(post.text);
       const addressed: Addressed | undefined = mention ? "mention" : undefined;
       const watch = this.posts[post.id];
       this.plan(plans, post, { own, isNew, baseline, aboutYou: own || mention || keywords.length > 0 });
       this.remember(post.key);
+      // Kept under both ids, so a read that finds only one of them knows the
+      // post.
+      if (post.altKey) this.remember(post.altKey);
       if (own) continue;
       if (!mention && keywords.length === 0 && !this.state.settings.reportAllPosts) continue;
       if (!addressed && this.excluded(post.text).length > 0) continue;
@@ -519,6 +538,12 @@ class Pass {
     await this.readThreads(key, group, plans, since);
   }
 
+  /** seenBeforePass says whether the last passes saw a post, under either of
+   *  its ids. */
+  private seenBeforePass(post: GroupPost): boolean {
+    return this.seenBefore.has(post.key) || (!!post.altKey && this.seenBefore.has(post.altKey));
+  }
+
   private freshPost(range: TimeRange | undefined, index: number, line: number, since: number, readAt: number): boolean {
     if (range && range.latest < since) return false;
     const maxAge = this.state.settings.maxItemAgeMs;
@@ -537,7 +562,12 @@ class Pass {
    *  name a keyword. A post seen for the first time is only recorded — its
    *  comments are part of the starting line — unless the post itself is new:
    *  then its comments are all new too. After that, a post is opened only when
-   *  its drawn comment count grew. */
+   *  its drawn comment count grew.
+   *
+   *  A new post is recorded with a count of nothing at once, before its page
+   *  is read: a pass that stops, is blocked, or cannot open the page before
+   *  then would otherwise leave no record, and the next pass, seeing the post
+   *  as already seen, would take its comments as part of the starting line. */
   private plan(plans: ThreadPlan[], post: GroupPost, about: { own: boolean; isNew: boolean; baseline: boolean; aboutYou: boolean }): void {
     if (!this.state.settings.watchComments || !about.aboutYou || post.comments === undefined) return;
     const watch = this.posts[post.id];
@@ -554,19 +584,18 @@ class Pass {
       return;
     }
     plans.push({ post, count, own: about.own, fresh: !watch && about.isNew });
+    if (!watch) this.posts[post.id] = { group: post.group.id, own: about.own, comments: 0, checkedAt: this.at };
   }
 
   /** readThreads opens the posts whose comments are due, up to the pass's
-   *  share. A post past that keeps its old count, so the next pass sees the
-   *  growth and opens it: nothing is skipped, only delayed. */
+   *  share. A post past that keeps its old count (a new post, the count of
+   *  nothing plan gave it), so the next pass sees the growth and opens it:
+   *  nothing is skipped, only delayed. */
   private async readThreads(key: string, group: GroupContext, plans: ThreadPlan[], since: number): Promise<void> {
     for (const plan of plans) {
       const watch = this.posts[plan.post.id];
       if (this.summary.commentReads >= this.state.settings.maxCommentReads) {
         this.summary.commentReadsDeferred += 1;
-        // A new post gets a count of nothing, so that the next pass sees its
-        // comments as growth.
-        if (!watch) this.posts[plan.post.id] = { group: group.id, own: plan.own, comments: 0, checkedAt: this.at };
         continue;
       }
       this.step(`Reading comments in ${group.name}`);
@@ -581,8 +610,11 @@ class Pass {
       const readAt = this.now();
       const source: ItemSource = { kind: "group_comment", name: group.name, group: group.id };
       const comments = thread.comments ?? [];
-      const unseen = comments.filter((raw) => !this.seen.has(commentKey(raw, plan.post.id))).length;
-      const allNew = plan.fresh || unseen <= plan.count - (watch?.comments ?? 0);
+      // Only comments that can be reported count: one drawn without an author
+      // or text is never recorded, and would look unseen on every read.
+      const unseen = comments.filter((raw) => String(raw.text ?? "").trim() && raw.author && !this.seen.has(commentKey(raw, plan.post.id))).length;
+      const before = watch?.comments ?? 0;
+      const allNew = plan.fresh || unseen <= plan.count - before;
       for (const raw of comments) {
         const own = isOwn({ author: raw.author, authorId: raw.author_id }, this.account);
         const mention = !own && mentionsAccount(raw.text, raw.mentions ?? [], this.account);
@@ -600,15 +632,35 @@ class Pass {
         if (this.inWindow(range) && !this.matches.has(item.key)) this.matches.set(item.key, match);
         if (isNew) this.announce(match);
       }
+      const counted = Math.max(plan.count, commentCount(thread.comments_text) ?? 0);
+      let { comments: read, shortReads } = this.countRead(before, counted, unseen, watch?.shortReads ?? 0);
+      if (shortReads >= MAX_SHORT_READS) {
+        read = counted;
+        shortReads = 0;
+        this.note(`${group.name}: a post's comment count grew, but its page drew fewer new comments ${MAX_SHORT_READS} times running; the count is taken as read. Facebook counts replies, which are not read, and its "Most relevant" order may hide comments.`);
+      }
       this.posts[plan.post.id] = {
         group: group.id,
         own: plan.own,
-        comments: Math.max(plan.count, commentCount(thread.comments_text) ?? 0),
+        comments: read,
         threadReadAt: this.at,
+        ...(shortReads > 0 ? { shortReads } : {}),
         checkedAt: this.at,
       };
-      this.log("thread", { group: key, post: plan.post.id, comments: thread.comments?.length ?? 0 });
+      this.log("thread", { group: key, post: plan.post.id, comments: comments.length, unseen, before, counted, recorded: read, short_reads: shortReads });
     }
+  }
+
+  /** countRead moves a post's recorded count by what its page actually drew.
+   *  The page shows the comments Facebook picks — a slow load or collapsed
+   *  comments draw none, and its "Most relevant" order leaves some out — and
+   *  the monitor never clicks to show more. So the count moves only by the
+   *  unseen comments read; the rest stay due, and the post is opened again.
+   *  A read that fell short is counted, so that comments that will never be
+   *  drawn do not keep the post open forever. */
+  private countRead(before: number, counted: number, unseen: number, shortReads: number): { comments: number; shortReads: number } {
+    if (before + unseen >= counted) return { comments: counted, shortReads: 0 };
+    return { comments: before + unseen, shortReads: shortReads + 1 };
   }
 
   /** freshComment decides whether an unseen comment is new. With a drawn
@@ -641,9 +693,10 @@ class Pass {
   }
 
   private remember(key: string): void {
-    if (this.seen.has(key)) return;
+    // A Set keeps the order keys were added in: taking a key out and putting
+    // it back moves it to the newest end.
+    this.seen.delete(key);
     this.seen.add(key);
-    this.seenOrder.push(key);
   }
 
   // --- plumbing --------------------------------------------------------------
@@ -696,7 +749,7 @@ class Pass {
       ...this.state,
       sources,
       posts,
-      seen: this.seenOrder.slice(-MAX_SEEN),
+      seen: [...this.seen].slice(-MAX_SEEN),
       lastPass: {
         at: this.at,
         finishedAt: this.now(),

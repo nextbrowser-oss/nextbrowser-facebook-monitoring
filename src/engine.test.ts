@@ -4,7 +4,7 @@ import type { MonitorEvent, NewItemEvent } from "./events.js";
 import { feedUrl, mobileFeedUrl, postUrl } from "./ids.js";
 import type { RawComment, RawPost } from "./scripts.js";
 import { SIGN_IN_URL } from "./scripts.js";
-import { emptyState, withSettings, type MonitorSettings, type MonitorState } from "./state.js";
+import { MAX_SEEN, emptyState, withSettings, type MonitorSettings, type MonitorState } from "./state.js";
 import { FakeFacebook, NOON, rawComment, rawPost } from "./testing/fakeBrowser.js";
 
 const MINUTE = 60_000;
@@ -292,6 +292,87 @@ describe("comments", () => {
     expect(texts(events)).toEqual(["acme or not?", "acme, no question"]);
   });
 
+  it("keeps a new post's comments due when the pass stops before its page is read", async () => {
+    const first = await pass(watching());
+    later();
+    const post = rawPost(GROUP, "Mila Novak", "anyone tried acme?");
+    publish(GROUP, post);
+    grow(post, rawComment("Ann Wu", "acme is great"), rawComment("Bob Ray", "acme broke for me"));
+    let stop = false;
+    const stopped = await pass(first.state, {
+      shouldStop: () => stop,
+      onStep: (step) => {
+        if (step.startsWith("Reading comments")) stop = true;
+      },
+    });
+    expect(stopped.summary.stopped).toBe(true);
+    expect(texts(stopped.events)).toEqual(["anyone tried acme?"]);
+    // Nothing of its comments was read: the watch says so.
+    expect(stopped.state.posts[post.id]).toMatchObject({ comments: 0 });
+    later();
+    const { events } = await pass(stopped.state);
+    expect(texts(events)).toEqual(["acme is great", "acme broke for me"]);
+  });
+
+  it("keeps the count where it was when the post's page drew none of the new comments", async () => {
+    const post = rawPost(GROUP, "Mila Novak", "acme thread");
+    publish(GROUP, post);
+    const first = await pass(watching());
+    expect(first.state.posts[post.id]).toMatchObject({ comments: 0 });
+    later();
+    // The count grew, but the page draws no comment: a slow load, or the
+    // comments collapsed.
+    post.comments_text = "2 comments";
+    const empty = await pass(first.state);
+    expect(fb.threadsRead).toEqual([post.id]);
+    expect(empty.state.posts[post.id]).toMatchObject({ comments: 0, shortReads: 1 });
+    later();
+    fb.comments[post.id] = [rawComment("Ann Wu", "acme new one"), rawComment("Bob Ray", "acme two")];
+    const { events, state } = await pass(empty.state);
+    expect(texts(events)).toEqual(["acme new one", "acme two"]);
+    expect(state.posts[post.id]).toMatchObject({ comments: 2 });
+    expect(state.posts[post.id]?.shortReads).toBeUndefined();
+  });
+
+  it("takes the count as read after three opens that draw nothing new, and says why", async () => {
+    const post = rawPost(GROUP, "Mila Novak", "acme thread");
+    publish(GROUP, post);
+    let state = (await pass(watching())).state;
+    post.comments_text = "3 comments";
+    const notes: string[][] = [];
+    for (let read = 0; read < 3; read += 1) {
+      later();
+      const out = await pass(state);
+      state = out.state;
+      notes.push(out.summary.notes);
+    }
+    expect(fb.threadsRead).toEqual([post.id, post.id, post.id]);
+    expect(state.posts[post.id]).toMatchObject({ comments: 3 });
+    expect(state.posts[post.id]?.shortReads).toBeUndefined();
+    expect(notes[1]!.some((note) => note.includes("drew fewer new comments"))).toBe(false);
+    expect(notes[2]!.some((note) => note.includes("drew fewer new comments"))).toBe(true);
+    later();
+    await pass(state);
+    expect(fb.threadsRead).toHaveLength(3);
+  });
+
+  it("moves the count only by the comments the page drew when Facebook shows its own pick", async () => {
+    const first = await pass(watching());
+    later();
+    // Three new comments, of which the page's "Most relevant" order draws one.
+    question.comments_text = "5 comments";
+    const pick = rawComment("Ann Wu", "acme pick");
+    fb.comments[question.id] = [pick];
+    const second = await pass(first.state);
+    expect(texts(second.events)).toEqual(["acme pick"]);
+    expect(second.state.posts[question.id]).toMatchObject({ comments: 3, shortReads: 1 });
+    later();
+    fb.comments[question.id] = [pick, rawComment("Bob Ray", "acme hidden", { time_text: "10m" })];
+    const third = await pass(second.state);
+    expect(fb.threadsRead).toEqual([question.id, question.id]);
+    expect(texts(third.events)).toEqual(["acme hidden"]);
+  });
+
   it("reads no comments with watchComments off", async () => {
     const first = await pass(watching({ watchComments: false }));
     later();
@@ -348,6 +429,25 @@ describe("degraded states", () => {
     expect(types(back.events)).toEqual(["signed_in"]);
   });
 
+  it("takes a page with no session cookie and no account button as signed out", async () => {
+    fb.anonymous = true;
+    const { events, summary } = await pass(watching());
+    expect(types(events)).toEqual(["signed_out"]);
+    expect(summary).toMatchObject({ signedIn: false, loginRequired: true, groupsRead: 0 });
+  });
+
+  it("says a pass failed when something unexpected ended it", async () => {
+    const first = await pass(watching());
+    later();
+    fb.failOn = "feed";
+    const { summary } = await pass(first.state);
+    expect(summary.failed).toBe(true);
+    expect(summary.notes).toContain("The pass failed: the tab crashed");
+    fb.failOn = "";
+    later();
+    expect((await pass(first.state)).summary.failed).toBe(false);
+  });
+
   it("stops at a security check and asks for it to be done by hand", async () => {
     const first = await pass(watching());
     fb.checkpoint = true;
@@ -394,6 +494,48 @@ describe("degraded states", () => {
     expect(pauses.length).toBeGreaterThan(0);
     expect(pauses.every((ms) => ms >= 1200)).toBe(true);
     expect(pauses).toContain(6500);
+  });
+});
+
+describe("the seen list", () => {
+  it("keeps a post that stays in view at the newest end, so a full list never lets it be announced twice", async () => {
+    const pinned = rawPost(GROUP, "Admin", "Pinned: acme FAQ");
+    publish(GROUP, pinned);
+    const first = await pass(watching());
+    // A long history: the list is full, and the pinned post is its oldest key.
+    const [top, ...rest] = first.state.seen;
+    const filler = Array.from({ length: MAX_SEEN - first.state.seen.length }, (_, index) => `post:${index + 1}`);
+    const full: MonitorState = { ...first.state, seen: [top!, ...filler, ...rest] };
+    later();
+    fb.groups[GROUP]!.posts.splice(1, 0, rawPost(GROUP, "Ana Lima", "acme news", { time_text: "5m" }));
+    const second = await pass(full);
+    expect(texts(second.events)).toEqual(["acme news"]);
+    expect(second.state.seen).toHaveLength(MAX_SEEN);
+    expect(second.state.seen).toContain(`post:${pinned.id}`);
+    later();
+    expect(texts((await pass(second.state)).events)).toEqual([]);
+  });
+
+  it("knows a post again by its numeric id after reading it by its pfbid", async () => {
+    const pfbid = "pfbid02AbCdEfGhIjKlMnOp";
+    const post = rawPost(GROUP, "Mila Novak", "acme by link", { id: pfbid });
+    publish(GROUP, post);
+    const first = await pass(watching());
+    expect(first.state.seen).toContain(`post:${pfbid}`);
+    later();
+    // This read found the numeric id beside the pfbid one.
+    post.id = "7199999999999999";
+    post.alt_id = pfbid;
+    const second = await pass(first.state);
+    expect(texts(second.events)).toEqual([]);
+    expect(second.state.seen).toEqual(expect.arrayContaining([`post:${pfbid}`, "post:7199999999999999"]));
+    later();
+    // m.facebook.com draws only the numeric id: still the same post.
+    post.alt_id = "";
+    fb.groups[GROUP]!.www = "blank";
+    const third = await pass(second.state);
+    expect(third.summary.fallbacks).toBe(1);
+    expect(texts(third.events)).toEqual([]);
   });
 });
 

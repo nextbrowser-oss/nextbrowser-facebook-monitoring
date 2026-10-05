@@ -1,6 +1,6 @@
 {
   "name": "@nextbrowser-oss/facebook-monitoring",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "The open-source Facebook Groups monitoring engine for Nextbrowser: posts and comments in the groups you watch that name your keywords or mention you, with the group and post context, ranked by urgency, read from a signed-in browser profile.",
   "keywords": [

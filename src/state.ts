@@ -70,6 +70,10 @@ export interface PostWatch {
   /** When its comments were last read. Every comment not seen by then is new
    *  on the next read. */
   threadReadAt?: number;
+  /** Reads in a row whose page drew fewer new comments than the count grew
+   *  by. `comments` moves only by what was read, so the post is opened again;
+   *  after three such reads the count is taken as read. */
+  shortReads?: number;
   checkedAt: number;
 }
 
@@ -126,8 +130,10 @@ export function emptyState(settings: Partial<MonitorSettings> = {}): MonitorStat
 }
 
 function integer(value: unknown, fallback: number, min: number, max = Number.MAX_SAFE_INTEGER): number {
+  // Number(null) and Number("") are 0, which would quietly turn the age
+  // window or comment reads off: a setting left empty takes its default.
   const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
+  if (value === null || value === undefined || value === "" || !Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(number)));
 }
 
@@ -209,11 +215,13 @@ export function normalizeState(raw: unknown): MonitorState {
     .sort(([, left], [, right]) => (finite(left.checkedAt) ?? 0) - (finite(right.checkedAt) ?? 0))
     .slice(-MAX_POSTS_WATCHED);
   for (const [id, value] of posts) {
+    const shortReads = Math.floor(finite(value.shortReads) ?? 0);
     state.posts[id] = {
       group: normalizeGroup(value.group),
       own: value.own === true,
       comments: value.comments,
       ...optional("threadReadAt", finite(value.threadReadAt)),
+      ...optional("shortReads", shortReads > 0 ? shortReads : undefined),
       checkedAt: finite(value.checkedAt) ?? 0,
     };
   }

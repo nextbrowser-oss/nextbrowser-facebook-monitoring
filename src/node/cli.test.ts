@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PassSummary } from "../engine.js";
 import type { FacebookItem } from "../items.js";
 import { emptyState } from "../state.js";
-import { describeEvent, describePass, parseDuration, settingsFromFlags } from "./cli.js";
+import { describeEvent, describePass, exitCode, parseDuration, settingsFromFlags } from "./cli.js";
 import { loadState, saveState } from "./store.js";
 
 describe("parseDuration", () => {
@@ -75,7 +75,7 @@ describe("describePass", () => {
   const summary: PassSummary = {
     signedIn: true, account: "Dana Reyes", loginRequired: false, securityCheck: false, rateLimited: false, pagesLoaded: 5,
     groupsRead: 3, baselines: 0, fallbacks: 1, unreadable: 0, postsRead: 40, scrolls: 4, matches: 6, newItems: 2, urgent: 1,
-    commentReads: 1, commentReadsDeferred: 0, stopped: false, notes: [],
+    commentReads: 1, commentReadsDeferred: 0, stopped: false, failed: false, notes: [],
   };
 
   it("sums a pass up in one line", () => {
@@ -86,6 +86,22 @@ describe("describePass", () => {
   it("says what stopped it", () => {
     const line = describePass({ ...summary, groupsRead: 0, fallbacks: 0, commentReads: 0, rateLimited: true, notes: ["Wait it out."] }, new Date(2026, 9, 5, 9, 0).getTime());
     expect(line).toBe("09:00  pass Dana Reyes: temporarily blocked\n        Wait it out.");
+  });
+});
+
+describe("exitCode", () => {
+  const summary = {
+    signedIn: true, loginRequired: false, securityCheck: false, rateLimited: false, pagesLoaded: 1,
+    groupsRead: 1, baselines: 0, fallbacks: 0, unreadable: 0, postsRead: 3, scrolls: 0, matches: 0, newItems: 0, urgent: 0,
+    commentReads: 0, commentReadsDeferred: 0, stopped: false, failed: false, notes: [],
+  } satisfies PassSummary;
+
+  it("says how a pass under once ended", () => {
+    expect(exitCode(summary)).toBe(0);
+    expect(exitCode({ ...summary, failed: true, notes: ["The pass failed: the tab crashed"] })).toBe(1);
+    expect(exitCode({ ...summary, signedIn: false, loginRequired: true })).toBe(3);
+    expect(exitCode({ ...summary, rateLimited: true, blocked: "blocked" })).toBe(4);
+    expect(exitCode({ ...summary, securityCheck: true, blocked: "check" })).toBe(5);
   });
 });
 

@@ -37,7 +37,7 @@ Facebook's markup is generated. Class names are random strings that change with 
 | --- | --- |
 | The feed | `[role="feed"]` |
 | A post | a `[role="article"]` or `[aria-posinset]` unit in the feed; comment previews nested in it (`[role="article"]` labelled "Comment by …") are not the post |
-| Its id and link | a permalink: `/groups/<g>/posts/<id>/`, `/groups/<g>/permalink/<id>/`, `?multi_permalinks=<id>`, `story_fbid=<id>` |
+| Its id and link | a permalink: `/groups/<g>/posts/<id>/`, `/groups/<g>/permalink/<id>/`, `?multi_permalinks=<id>`, `story_fbid=<id>`. When a post links both an opaque `pfbid…` id and its number, the number is its id and the `pfbid` one an alias — see [one post, two ids](#one-post-two-ids) |
 | Its author | the first link in the post's header to a profile: `/groups/<g>/user/<id>/` or `/profile.php?id=<id>` |
 | Its text | `[data-ad-preview="message"]` / `[data-ad-comet-preview="message"]`, or the longest `div[dir="auto"]` in the post; emoji drawn as images are read from their `alt` |
 | Tags | links to profiles inside the text |
@@ -65,7 +65,7 @@ When www.facebook.com draws no posts for a group — a blank page, its error scr
 
 Facebook never draws a timestamp a script can trust. It draws "3h", "2 hrs", "Yesterday at 10:15" or a date, often with the letters scattered across hidden spans, so text read from the page comes out scrambled. So time is not what decides freshness.
 
-The first time a group is read, what it holds is its **starting line**: the pass records the time and every post id, and announces nothing. From then on a post is new when its id was not seen before (the state keeps the last 5,000 item keys) and:
+The first time a group is read, what it holds is its **starting line**: the pass records the time and every post id, and announces nothing. From then on a post is new when its id was not seen before (the state keeps the 5,000 most recently seen item keys; a key read again moves to the newest end, so a pinned post or a long-lived thread that stays in view is never trimmed off and announced again) and:
 
 - **it sits above the newest post the last pass saw.** In a chronological feed, anything above a known post came after it. This is the rule that does the work, and it needs no time at all; or
 - **its drawn time says it was created after the starting line**, which dates a post the feed position cannot — for instance when the read never got back to a known post.
@@ -78,6 +78,12 @@ A drawn time is read as a range, never a point: "3h" means at least three hours 
 When a read never gets back to a known post — the group was very busy, or the scroll limit was too low — the summary says so, and only posts with a readable time after the starting line are announced from it. New items are emitted as `new_item` events, oldest first within each group.
 
 A group removed from the settings is forgotten, so adding it back starts over.
+
+### One post, two ids
+
+www.facebook.com often links a post by an opaque `pfbid…` id, while m.facebook.com names it by its number (`story_fbid`, or the `top_level_post_id` in an article's `data-ft`). When a post's links (or its `data-ft`) give both, the number is its id, so both sites agree on it, and the `pfbid` key is kept in `seen` beside it: a later read that finds either id knows the post. A numeric link is only taken from the same group as the post's own permalink, so a post that shares another group's post keeps its own id.
+
+When www.facebook.com draws only the `pfbid` link and a later pass falls back to m.facebook.com, which draws only the number, nothing on either page ties the two together: the post gets a second key, and the fallback read may announce it again. That is a known limit.
 
 ## What is reported
 
@@ -94,11 +100,21 @@ Every item carries its group (`id`, `name`, `url`), its post (`id`, `url`, `auth
 
 Opening a post is a page load of its own, so comments are read sparingly. Only posts that concern the account are watched: its own posts, and posts that mention it or name a keyword. For each, the state keeps the comment count Facebook drew (`state.posts`), and:
 
-- a post seen for the first time is only recorded; its comments are part of the starting line — unless the post itself is new, and then its comments are all new too;
+- a post seen for the first time is only recorded; its comments are part of the starting line — unless the post itself is new, and then its comments are all new too. A new post is recorded with a count of nothing straight away, before its page is opened, so a pass that is stopped, blocked, or cannot open that page leaves it due for the next pass rather than taking its comments as the starting line;
 - after that, a post is opened only when its drawn count grew;
 - a pass opens at most `maxCommentReads` posts (5). A post past that keeps its old count, so the next pass sees the growth and opens it — nothing is skipped, only delayed — and the summary says how many wait.
 
 On the post's page the top-level comments are read: `[role="article"]` labelled "Comment by …" (replies, labelled "Reply by …", are left out), their id from the `?comment_id=` in their timestamp link. A comment is reported when it mentions the account, when it is on the account's own post, or when it names a keyword.
+
+### The recorded count moves only by what was read
+
+A post's page draws the comments Facebook picks. A slow load or collapsed comments draw none; Facebook's "Most relevant" order leaves some of the newest out; and Facebook's count takes in replies, which are not read. The monitor never clicks — not the comment order, not "View more comments" — so it cannot ask for the rest. Instead, the count recorded in `state.posts` moves only by the unseen comments the page actually drew:
+
+- a read that draws as many unseen comments as the count grew by records the new count;
+- a read that draws fewer records the old count plus what it drew, and is counted as a short read (`shortReads`). The post stays due and is opened again on the next pass;
+- after three short reads in a row the count is taken as read, so a post whose missing comments will never be drawn — replies, or comments "Most relevant" keeps hidden — is not opened forever. The summary says so in a note.
+
+So a growth Facebook never draws costs up to three page loads, not one, and a comment "Most relevant" hides through all three reads is not reported.
 
 An unseen comment with a readable time is new when it was written after the starting line. One without a readable time is new only when every unseen comment must be: under a post that is itself new, or when no more comments are unseen than the count grew by. The first opening of an older post also shows comments from before the starting line, and those, undated, cannot be told apart from the new ones.
 
@@ -122,14 +138,16 @@ Four points or more is **high**, two or three is **medium**, anything else is **
 
 | What the page shows | What the pass does |
 | --- | --- |
-| The sign-in wall: `/login`, a login form, or the email and password fields of the dialog over a public group | Emits `signed_out` once, sets `loginRequired`, and stops: group content cannot be read signed out. |
+| The sign-in wall: `/login`, a login form, or the email and password fields of the dialog over a public group; or, on the first page, no `c_user` session cookie and no account button (a public group drawn to a visitor without its login dialog) | Emits `signed_out` once, sets `loginRequired`, and stops: group content cannot be read signed out. |
 | A security check: anything under `/checkpoint/` | Emits `security_check`, sets `securityCheck`, and stops. Someone has to complete it in the profile. |
-| A block: "You're Temporarily Blocked", "You can't use this feature right now", "Your account is restricted", the "going too fast" warning | Sets `rateLimited` and `blocked` with Facebook's words, and stops. |
+| A block: "You're Temporarily Blocked", "You can't use this feature right now", "Your account is restricted", the "going too fast" warning — looked for only in Facebook's own chrome (dialogs, banners, headings, the page around the feed), never in a post or a comment that quotes it | Sets `rateLimited` and `blocked` with Facebook's words, and stops. |
 | A private group the account has not joined | Notes "You are not a member of …" and goes on with the next group. |
 | "This content isn't available right now" on both sites | Notes the group as not available and goes on. |
 | No posts drawn on www.facebook.com | Reads the group from m.facebook.com. |
 | No posts drawn on either site | Notes the group as unreadable this pass and goes on. |
 | A post's page that fails | Logs it and goes on; the post keeps its old count and is opened again next pass. |
+| A post's page that draws fewer new comments than the count grew by | Records only what it drew; after three such reads in a row, takes the count as read and says so. |
+| Anything else: the browser or the engine throws | Notes "The pass failed: …", sets `failed`, and keeps what was read before. |
 
 After a stop, the caller backs off: `scheduleDelay(interval, { backOff: true })` waits three intervals. A pass that stops keeps everything it read before the stop, and every group it did not reach keeps its old state.
 

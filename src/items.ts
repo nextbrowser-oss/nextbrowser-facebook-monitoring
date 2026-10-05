@@ -68,6 +68,9 @@ export interface FacebookItem {
 export interface GroupPost {
   key: string;
   id: string;
+  /** The post's other key, when the page linked it by both its numeric and
+   *  its pfbid id: "post:<pfbid>". A post seen under either is the same post. */
+  altKey?: string;
   url: string;
   group: GroupContext;
   author: string;
@@ -116,9 +119,11 @@ export function normalizePosts(raw: RawPost[], group: GroupContext, readAt: numb
     keys.add(id);
     const range = drawnTimeRange(entry.time_text, readAt);
     const comments = commentCount(entry.comments_text) ?? (entry.action_bar ? 0 : undefined);
+    const altId = normalizePostId(entry.alt_id);
     posts.push({
       key: `post:${id}`,
       id,
+      ...optional("altKey", altId && altId !== id ? `post:${altId}` : undefined),
       url: postUrl(group.id, id),
       group,
       author: String(entry.author ?? "").trim(),

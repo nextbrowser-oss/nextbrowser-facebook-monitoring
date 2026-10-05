@@ -162,6 +162,7 @@ describe("groupFeedScript", () => {
       reactions_text: "1.2K",
       shares_text: "4 shares",
       action_bar: true,
+      alt_id: "",
     });
     expect(second).toMatchObject({
       id: "7100000000000002",
@@ -175,6 +176,25 @@ describe("groupFeedScript", () => {
       reactions_text: "You and 12 others",
       action_bar: true,
     });
+  });
+
+  it("keys a post by its numeric id when the page links it beside a pfbid one, and keeps the pfbid as an alias", () => {
+    page(GROUP_URL, `${CHROME}<div role="main"><div role="feed">
+      <div role="article">
+        <h3><a href="https://www.facebook.com/profile.php?id=100400">Lee Park</a></h3>
+        <a href="https://www.facebook.com/groups/acme.users/posts/pfbid02AbCdEfGhIjKlMnOp/?__cft__[0]=AZ" aria-label="2h">2h</a>
+        <div data-ad-preview="message"><div dir="auto">acme by link</div></div>
+        <a href="https://www.facebook.com/groups/acme.users/?multi_permalinks=7199999999999999">See post</a>
+      </div>
+      <div role="article">
+        <h3><a href="https://www.facebook.com/profile.php?id=100500">Ana Lima</a></h3>
+        <a href="https://www.facebook.com/groups/acme.users/posts/pfbid02ZyXwVuTsRqPoNmLk/" aria-label="5m">5m</a>
+        <div data-ad-preview="message"><div dir="auto">only a pfbid</div></div>
+      </div>
+    </div></div>`);
+    const [both, only] = run<FeedSnapshot>(groupFeedScript()).posts;
+    expect(both).toMatchObject({ id: "7199999999999999", alt_id: "pfbid02AbCdEfGhIjKlMnOp", time_text: "2h", group: "acme.users" });
+    expect(only).toMatchObject({ id: "pfbid02ZyXwVuTsRqPoNmLk", alt_id: "", time_text: "5m" });
   });
 
   it("reads nothing, and says why, on a page with no feed", () => {
@@ -206,6 +226,7 @@ describe("mobileGroupScript", () => {
         reactions_text: "5",
         shares_text: "",
         action_bar: true,
+        alt_id: "",
       },
       expect.objectContaining({ id: "7100000000000004", group: "1234567890", author: "Kim Ito", author_id: "100600", text: "Weekly thread", time_text: "Yesterday at 9:02 PM" }),
     ]);
@@ -285,6 +306,25 @@ describe("the screens in front of a group", () => {
     expect(health().gate.blocked).toBe("You’re Temporarily Blocked");
     page(GROUP_URL, `${WWW_FEED}<div role="dialog"><span>You can't use this feature right now</span></div>`);
     expect(health().gate.blocked).toBe("You can't use this feature right now");
+  });
+
+  it("does not take a post or a comment that quotes a block notice for the block", () => {
+    page(GROUP_URL, `${CHROME}<div role="main"><div role="feed">
+      <div role="article"><h3><a href="https://www.facebook.com/profile.php?id=100400">Lee Park</a></h3>
+        <a href="https://www.facebook.com/groups/acme.users/posts/7100000000000009/">1h</a>
+        <div data-ad-preview="message"><div dir="auto">Anyone else getting "You're temporarily blocked" when posting?</div></div>
+        <div role="article" aria-label="Comment by Bo Chen"><div dir="auto">yes, you can't use this feature right now for a day</div></div>
+      </div>
+      <div aria-posinset="2"><div dir="auto">Your account has been restricted, they told me</div></div>
+    </div></div>`);
+    expect(health().gate.blocked).toBe("");
+    expect(run<FeedSnapshot>(groupFeedScript()).gate.blocked).toBe("");
+    page("https://www.facebook.com/groups/acme.users/posts/7100000000000009/", `${CHROME}<div role="main">
+      <div data-ad-comet-preview="message"><div dir="auto">FYI: "You're Temporarily Blocked" means wait a day</div></div></div>`);
+    expect(run<ThreadSnapshot>(threadScript()).gate.blocked).toBe("");
+    // The notice itself, drawn over the feed, still counts.
+    page(GROUP_URL, `${WWW_FEED}<div role="dialog"><h2>You’re Temporarily Blocked</h2></div>`);
+    expect(health().gate.blocked).toBe("You’re Temporarily Blocked");
   });
 
   it("knows a private group the account has not joined", () => {

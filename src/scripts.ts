@@ -58,7 +58,11 @@ export const TEXT_MAX = 2_000;
  *    fields of the dialog a signed-out visitor gets over a public group;
  *  - a security check: anything under /checkpoint/;
  *  - a block: "You're Temporarily Blocked", "You can't use this feature right
- *    now", "Your account is restricted", and the "going too fast" warning;
+ *    now", "Your account is restricted", and the "going too fast" warning.
+ *    Those words are looked for only in Facebook's own chrome — dialogs,
+ *    banners, headings, the page around the feed — never inside a post or a
+ *    comment: a member asking "anyone else getting You're temporarily
+ *    blocked?" must not end every pass as blocked;
  *  - an unavailable group: "This content isn't available right now", which is
  *    also what a wrong link or a removed group shows;
  *  - not a member: a private group draws its About card and a Join button, and
@@ -67,13 +71,35 @@ export const TEXT_MAX = 2_000;
 const GATE_HELPER = String.raw`
   const has = (selector) => { try { return !!document.querySelector(selector); } catch (error) { return false; } };
   const pageText = () => String((document.body && document.body.innerText) || "").replace(/\s+/g, " ");
+  // What members wrote: the feed, its posts, their comments, and a post's
+  // message on its own page.
+  const USER_CONTENT = '[role="feed"], [role="article"], article, [aria-posinset], [data-ft], [data-ad-preview="message"], [data-ad-comet-preview="message"]';
+  // chromeText is the page's text without what members wrote, and without
+  // scripts and styles.
+  const chromeText = () => {
+    const body = document.body;
+    if (!body) return "";
+    try {
+      const parts = [];
+      const walker = document.createTreeWalker(body, 1 | 4, { acceptNode: (node) => {
+        if (node.nodeType !== 1) return 1;
+        if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(node.tagName)) return 2;
+        try { if (node.matches(USER_CONTENT)) return 2; } catch (error) {}
+        return 3;
+      } });
+      for (let node = walker.nextNode(); node && parts.length < 20000; node = walker.nextNode()) parts.push(node.data);
+      return parts.join(" ").replace(/\s+/g, " ");
+    } catch (error) {
+      return pageText();
+    }
+  };
   const gate = () => {
     const path = String(location.pathname || "").toLowerCase();
     const text = pageText();
     const checkpoint = path.indexOf("/checkpoint") >= 0;
     const loginForm = has('form[action*="login"]') || (has('input[name="email"]') && has('input[name="pass"]'));
     const content = has('[role="feed"], [role="article"], article, [data-ft]');
-    const blocked = /you[’']re temporarily blocked|you can[’']t use this feature right now|your account (?:is|has been) restricted|misusing this feature by going too fast/i.exec(text);
+    const blocked = /you[’']re temporarily blocked|you can[’']t use this feature right now|your account (?:is|has been) restricted|misusing this feature by going too fast/i.exec(chromeText());
     const unavailable = !content && /this content isn[’']t available|this page isn[’']t available|the link you followed may be broken|content not found/i.test(text);
     const notMember = !content && !unavailable && /only members can see|you[’']re not a member of this group|you are not a member of this group|join (?:this )?group to see/i.test(text);
     return {
@@ -126,6 +152,12 @@ const LINK_HELPER = String.raw`
     }
     return POST_ID.test(id) ? { group: group, id: id } : null;
   };
+  // www.facebook.com often links a post by an opaque "pfbid…" id, while
+  // m.facebook.com names it by its number. When a post links both, the
+  // number is its key, so the two sites agree on it, and the pfbid one is
+  // kept as an alias.
+  const NUMERIC_ID = /^\d{1,25}$/;
+  const sameGroup = (left, right) => !left || !right || left.toLowerCase() === right.toLowerCase();
   const profileOf = (href) => {
     const url = absolute(href);
     if (!onFacebook(url)) return null;
@@ -316,6 +348,9 @@ export interface RawPost {
   /** Whether the post's action bar (Like · Comment · Share) is drawn. With it
    *  drawn and no comment count beside it, the post has no comments. */
   action_bar: boolean;
+  /** The post's other id, when the page linked it both ways: the pfbid one
+   *  when `id` is the numeric one. "" otherwise. */
+  alt_id: string;
 }
 
 export interface RawMention {
@@ -368,18 +403,26 @@ export function groupFeedScript(): string {
   const seen = new Set();
   for (const unit of units) {
     const root = rootOf(unit);
-    let permalink = null;
+    let first = null;
+    let numeric = null;
+    let opaque = "";
     let timeText = "";
     for (const link of own(root, "a[href]")) {
       const found = permalinkOf(link.getAttribute("href"));
       if (!found) continue;
-      if (!permalink) permalink = { found: found, href: absolute(link.getAttribute("href")).href };
-      if (found.id !== permalink.found.id) continue;
+      const entry = { found: found, href: absolute(link.getAttribute("href")).href };
+      if (!first) first = entry;
+      if (!numeric && NUMERIC_ID.test(found.id) && sameGroup(found.group, first.found.group)) numeric = entry;
+      if (!opaque && !NUMERIC_ID.test(found.id) && found.id === first.found.id) opaque = found.id;
+      if (found.id !== first.found.id) continue;
       const label = labelOf(link);
       if (!timeText && label && label.length <= 40) timeText = label;
     }
-    if (!permalink || seen.has(permalink.found.id)) continue;
+    if (!first) continue;
+    const permalink = numeric || first;
+    if (seen.has(permalink.found.id)) continue;
     seen.add(permalink.found.id);
+    const altId = numeric && opaque ? opaque : "";
     let author = null;
     for (const link of own(root, "h2 a[href], h3 a[href], h4 a[href], strong a[href], a[href*='/user/']")) {
       const profile = profileOf(link.getAttribute("href"));
@@ -424,7 +467,8 @@ export function groupFeedScript(): string {
       comments_text: commentsText,
       reactions_text: reactionsText,
       shares_text: sharesText,
-      action_bar: actionBar
+      action_bar: actionBar,
+      alt_id: altId
     });
   }
   if (out.posts.length === 0) out.diag = pageDiag();
@@ -451,11 +495,16 @@ export function mobileGroupScript(): string {
       const candidate = permalinkOf(link.getAttribute("href"));
       if (candidate) { found = candidate; href = absolute(link.getAttribute("href")).href; break; }
     }
-    if (!found) {
-      let ft = null;
-      try { ft = JSON.parse(unit.getAttribute("data-ft") || "null"); } catch (error) { ft = null; }
-      const id = ft && ft.top_level_post_id ? String(ft.top_level_post_id) : "";
-      if (POST_ID.test(id)) { found = { group: "", id: id }; href = ""; }
+    let ft = null;
+    try { ft = JSON.parse(unit.getAttribute("data-ft") || "null"); } catch (error) { ft = null; }
+    const ftId = ft && ft.top_level_post_id ? String(ft.top_level_post_id) : "";
+    let altId = "";
+    if (!found && POST_ID.test(ftId)) { found = { group: "", id: ftId }; href = ""; }
+    else if (found && !NUMERIC_ID.test(found.id) && NUMERIC_ID.test(ftId)) {
+      // The link named the post by its pfbid; the unit's data-ft names it
+      // by its number.
+      altId = found.id;
+      found = { group: found.group, id: ftId };
     }
     if (!found || seen.has(found.id)) continue;
     seen.add(found.id);
@@ -484,7 +533,8 @@ export function mobileGroupScript(): string {
       comments_text: labels.find((label) => COMMENTS_LABEL.test(label)) || "",
       reactions_text: reaction ? labelOf(reaction) : "",
       shares_text: labels.find((label) => SHARES_LABEL.test(label)) || "",
-      action_bar: labels.some((label) => /^comment$/i.test(label))
+      action_bar: labels.some((label) => /^comment$/i.test(label)),
+      alt_id: altId
     });
   }
   if (out.posts.length === 0) out.diag = pageDiag();

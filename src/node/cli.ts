@@ -197,6 +197,17 @@ export function describePass(summary: PassSummary, at: number): string {
   return `${time(at)}  pass${who}: ${parts.join("; ") || "nothing read"}${summary.notes.length ? `\n        ${summary.notes.join("\n        ")}` : ""}`;
 }
 
+/** exitCode is how a pass ends the process under `once`: 5 for a security
+ *  check, 4 for a block, 3 for a signed-out profile, 1 for a pass that an
+ *  unexpected error cut short, 0 otherwise. */
+export function exitCode(summary: PassSummary): number {
+  if (summary.securityCheck) return 5;
+  if (summary.blocked || summary.rateLimited) return 4;
+  if (summary.loginRequired) return 3;
+  if (summary.failed) return 1;
+  return 0;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: true });
   const command = positionals[0] ?? "";
@@ -274,7 +285,7 @@ export async function main(argv: string[]): Promise<number> {
     const at = state.lastPass?.at ?? Date.now();
     print(format === "json" ? JSON.stringify({ type: "pass", at, summary: result.summary }) : describePass(result.summary, at));
     const backOff = !!result.summary.blocked || result.summary.rateLimited || result.summary.securityCheck;
-    if (command === "once" || stopping) return result.summary.securityCheck ? 5 : backOff ? 4 : result.summary.loginRequired ? 3 : 0;
+    if (command === "once" || stopping) return exitCode(result.summary);
     await wait(scheduleDelay(intervalMs, { backOff: backOff || result.summary.loginRequired }));
     if (stopping) return 0;
   }

@@ -4,7 +4,7 @@ Start with the log. In the app it is the monitor's log file (*Show log* in the p
 
 ## "The profile is not signed in to Facebook"
 
-The group page showed the sign-in wall: `/login`, a login form, or the email and password fields Facebook puts over a public group for a visitor. Group content is only shown to a signed-in account. Open the profile, sign in to facebook.com, and the next pass picks up from there; nothing seen before is announced again. The CLI exits with code 3 under `once`, and `run` waits three intervals before trying again.
+The group page showed the sign-in wall: `/login`, a login form, or the email and password fields Facebook puts over a public group for a visitor — or it showed a public group with no `c_user` session cookie and no account button, which is how a visitor sees it when Facebook leaves the login dialog out. Group content is only shown to a signed-in account. If the profile is signed in and this still shows, check that its cookies are allowed for facebook.com: the session cookie is how the monitor knows the account. Open the profile, sign in to facebook.com, and the next pass picks up from there; nothing seen before is announced again. The CLI exits with code 3 under `once`, and `run` waits three intervals before trying again.
 
 ## "Facebook stopped this account at a security check"
 
@@ -14,7 +14,7 @@ A check right after the first sign-in on a new proxy is common. Several in a row
 
 ## "Facebook is blocking this account from reading"
 
-The page said "You're Temporarily Blocked", "You can't use this feature right now", "Your account is restricted", or that the account was "going too fast". The note quotes Facebook's words. The monitor stops at once and waits three intervals. If it repeats:
+The page said "You're Temporarily Blocked", "You can't use this feature right now", "Your account is restricted", or that the account was "going too fast". The note quotes Facebook's words. Those words are looked for only in Facebook's own dialogs, banners and headings, never in posts or comments, so a member quoting them does not stop the pass; if the note appears and the profile shows no block, open an issue with the `page` log line. The monitor stops at once and waits three intervals. If it repeats:
 
 - raise `--interval` (60 minutes is a sound start after a block);
 - lower `--max-scrolls` and `--max-comment-reads`;
@@ -43,6 +43,14 @@ Neither site drew a post for the group. The pass goes on with the other groups a
 
 The group had more new posts than `maxScrolls` scrolls could reach, so the read never met a post the last pass saw. Posts in between may be missed, and only posts with a readable time after the starting line are announced from that read. Raise `--max-scrolls` (up to 6), or shorten the interval within the pacing limits.
 
+## "… a post's comment count grew, but its page drew fewer new comments 3 times running"
+
+A watched post's count went up, but three reads in a row of its page drew fewer unseen comments than that. The count recorded for it moves only by what was read, so the post was opened again each time; after the third, the count is taken as read so the post is not opened forever. Usually the difference is replies (Facebook counts them, the monitor does not read them) or comments Facebook's "Most relevant" order keeps off the page. A comment it hid through all three reads is not reported. If it happens for most posts, the comments may be loading too slowly: look at the `thread` log lines (`comments`, `unseen`, `counted`, `recorded`).
+
+## "The pass failed: …"
+
+Something other than Facebook's screens ended the pass: the browser closed, nbc failed, or the engine hit an error. The summary's `failed` is `true`, and `facebook-monitor once` exits with code 1. What was read before the failure is kept. If it repeats, run with `--verbose` and open an issue with the `pass_error` line.
+
 ## "No keywords and reportAllPosts is off"
 
 With no keywords, only posts and comments that mention the account and comments on its own posts are reported. Add keywords, or turn on `reportAllPosts` (`--all-posts`) to hear about every new post.
@@ -68,13 +76,13 @@ The session cookie carried no account id, and no link on the page named the acco
 - The post does not concern the account: only the account's own posts and posts that mention it or name a keyword have their comments read.
 - The post's drawn comment count did not grow, or the pass had opened `maxCommentReads` posts already; the summary says how many wait.
 - It is a reply to a comment: replies are not read.
-- Facebook's "Most relevant" selection on the post's page did not draw it.
+- Facebook's "Most relevant" selection on the post's page did not draw it. The monitor never switches the order (it never clicks), so it reopens the post on the next passes while the count says comments are missing, up to three reads, and then takes the count as read.
 - It was the first time the post was opened, it has no readable time, and more comments were unseen than the count grew by: they cannot be told from older ones.
 - It names no keyword, does not mention the account, and is not on the account's own post.
 
 ## The same post or comment shows twice
 
-It should not: a post is keyed by its id, a comment by its id (or, without one, by its post, author and text). If it does, open an issue with both log lines.
+It should not: a post is keyed by its id, a comment by its id (or, without one, by its post, author and text). One known case: www.facebook.com links a post only by its `pfbid…` id, and a later pass reads the group from m.facebook.com, which names it by its number. When a post's page links both, the monitor keeps both and knows it either way; when it links only one, the two sites cannot be matched, and the fallback read may announce it again. Otherwise, open an issue with both log lines.
 
 ## The profile does not start
 
