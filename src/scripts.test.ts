@@ -305,6 +305,34 @@ describe("groupFeedScript on the October 2026 front end", () => {
     expect(snapshot.posts[1]!.url).toBe("https://www.facebook.com/groups/dataminers/posts/2446779445731099/");
   });
 
+  it("takes the name beside the avatar, not the avatar's presence text", async () => {
+    page("https://www.facebook.com/groups/clawdbotcommunity/?sorting_setting=CHRONOLOGICAL", `
+      <div role="feed">
+        <div class="post">
+          <a href="/groups/2014630925774013/user/61583798466416/?__cft__[0]=x"><svg><image href="avatar.jpg"></image></svg><span>Online status indicator</span> <span>Active</span></a>
+          <div data-ad-rendering-role="profile_name"><h2><a href="/groups/2014630925774013/user/61583798466416/?__cft__[0]=x"><b><span>Automation by Sohaib</span></b></a></h2></div>
+          <a href="https://www.facebook.com/groups/clawdbotcommunity/posts/2218273708743066/">5h</a>
+          <div data-ad-preview="message"><div dir="auto">Real Estate Business Owners: Stop Losing Leads</div></div>
+        </div>
+      </div>`);
+    const [post] = (await runAsync<FeedSnapshot>(groupFeedScript())).posts;
+    expect([post!.author, post!.author_id]).toEqual(["Automation by Sohaib", "61583798466416"]);
+  });
+
+  it("reads a shared link's post from its story message", async () => {
+    page("https://www.facebook.com/groups/automationandwebscraping/?sorting_setting=CHRONOLOGICAL", `
+      <div role="feed">
+        <div class="link-post">
+          <div data-ad-rendering-role="profile_name"><h2><a href="/groups/202542189574395/user/100063793040606/">IdreamitSolution</a></h2></div>
+          <a href="https://www.facebook.com/groups/automationandwebscraping/posts/1032259193269353/">1d</a>
+          <div data-ad-rendering-role="story_message"><div><span dir="auto"><div>Free Live DevOps Demo Session!</div><div>Join us on Saturday</div></span></div></div>
+          <a href="https://example.com/devops"><div data-ad-rendering-role="title">DevOps demo</div><div data-ad-rendering-role="description">Free Live DevOps Demo Session!</div></a>
+        </div>
+      </div>`);
+    const [post] = (await runAsync<FeedSnapshot>(groupFeedScript())).posts;
+    expect([post!.author, post!.text]).toEqual(["IdreamitSolution", "Free Live DevOps Demo Session!\nJoin us on Saturday"]);
+  });
+
   it("names an anonymous post's author from its header, and never takes a commenter for it", async () => {
     page("https://www.facebook.com/groups/automationandwebscraping/?sorting_setting=CHRONOLOGICAL", `
       <div role="feed">

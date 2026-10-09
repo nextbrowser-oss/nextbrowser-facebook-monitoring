@@ -43,7 +43,7 @@ export const SIGN_IN_URL = "https://www.facebook.com/";
 export const FEED_READY_SELECTOR = `[role="feed"] [role="article"], [role="feed"] [aria-posinset]`;
 /** What a drawn post holds, whatever wraps it: its message or its author's
  *  link inside the group. */
-export const POST_CONTENT_SELECTOR = `[data-ad-preview="message"], [data-ad-comet-preview="message"], a[href*="/groups/"][href*="/user/"]`;
+export const POST_CONTENT_SELECTOR = `[data-ad-preview="message"], [data-ad-comet-preview="message"], [data-ad-rendering-role="story_message"], a[href*="/groups/"][href*="/user/"]`;
 /** How long the read waits for Facebook to write the permalinks it was
  *  pointed at; 400 ms was enough live, 0 was not. */
 const REVEAL_WAIT_MS = 600;
@@ -178,6 +178,21 @@ const LINK_HELPER = String.raw`
     return null;
   };
   const labelOf = (node) => String((node && (node.getAttribute("aria-label") || node.innerText || node.textContent)) || "").replace(/\s+/g, " ").trim();
+  // An avatar links the same profile as the name beside it, and comes first,
+  // but its text is what a screen reader hears of the presence dot ("Online
+  // status indicator Active"), not the name (2026-10-09).
+  const isAvatar = (link) => /^online status indicator\b/i.test(labelOf(link))
+    || (!!link.querySelector("img, image, svg") && !String(link.innerText || link.textContent || "").trim());
+  // authorIn is the first link to a profile, avatars aside, with its name.
+  const authorIn = (links) => {
+    for (const link of links) {
+      if (isAvatar(link)) continue;
+      const profile = profileOf(link.getAttribute("href"));
+      const name = labelOf(link);
+      if (profile && name && name.length <= 80) return { name: name, id: profile.id, url: profile.url };
+    }
+    return null;
+  };
   // textOf reads user-written text the way a reader sees it: the words, the
   // line breaks, and the emoji Facebook draws as images, which innerText
   // leaves out. The "See more" control inside a cut-short post is skipped.
@@ -470,12 +485,11 @@ export function groupFeedScript(): string {
     if (seen.has(permalink.found.id)) continue;
     seen.add(permalink.found.id);
     const altId = numeric && opaque ? opaque : "";
-    let author = null;
-    for (const link of own(root, "h2 a[href], h3 a[href], h4 a[href], strong a[href], a[href*='/user/']")) {
-      const profile = profileOf(link.getAttribute("href"));
-      const name = labelOf(link);
-      if (profile && name && name.length <= 80) { author = { name: name, id: profile.id, url: profile.url }; break; }
-    }
+    // The header's link names the author; any link into the group's member
+    // pages is the fallback. One query would take them in page order, which
+    // puts the avatar first.
+    let author = authorIn(own(root, '[data-ad-rendering-role="profile_name"] a[href], h2 a[href], h3 a[href], h4 a[href], strong a[href]'))
+      || authorIn(own(root, "a[href*='/user/']"));
     if (!author) {
       // A post made anonymously names "Anonymous participant" in its header
       // and links no profile; its h3 is the post's own title, not a name.
@@ -483,7 +497,9 @@ export function groupFeedScript(): string {
       const name = header ? textOf(header) : "";
       if (name && name.length <= 80) author = { name: name, id: "", url: "" };
     }
-    const message = own(root, '[data-ad-preview="message"], [data-ad-comet-preview="message"]')[0] || null;
+    // A shared link's post marks its words only as the story's message.
+    const message = own(root, '[data-ad-preview="message"], [data-ad-comet-preview="message"]')[0]
+      || own(root, '[data-ad-rendering-role="story_message"]')[0] || null;
     let text = message ? textOf(message) : "";
     if (!text) {
       // No marked message: the longest piece of user-written text in the
@@ -669,12 +685,7 @@ export function threadScript(): string {
       const label = labelOf(link);
       if (found === id && !timeText && label && label.length <= 40) timeText = label;
     }
-    let author = null;
-    for (const link of own(comment, "a[href]")) {
-      const profile = profileOf(link.getAttribute("href"));
-      const name = labelOf(link);
-      if (profile && name && name.length <= 80) { author = { name: name, id: profile.id, url: profile.url }; break; }
-    }
+    let author = authorIn(own(comment, "a[href]"));
     if (!author) {
       const label = /^comment by (.+?)(?:\s+(?:\d+|an?)\s+\w+\s+ago|\s+yesterday.*|\s+just now)?$/i.exec(comment.getAttribute("aria-label") || "");
       if (label) author = { name: label[1].trim().slice(0, 80), id: "", url: "" };
