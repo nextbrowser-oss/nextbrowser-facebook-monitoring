@@ -476,6 +476,13 @@ export function groupFeedScript(): string {
       const name = labelOf(link);
       if (profile && name && name.length <= 80) { author = { name: name, id: profile.id, url: profile.url }; break; }
     }
+    if (!author) {
+      // A post made anonymously names "Anonymous participant" in its header
+      // and links no profile; its h3 is the post's own title, not a name.
+      const header = own(root, '[data-ad-rendering-role="profile_name"], h2')[0];
+      const name = header ? textOf(header) : "";
+      if (name && name.length <= 80) author = { name: name, id: "", url: "" };
+    }
     const message = own(root, '[data-ad-preview="message"], [data-ad-comet-preview="message"]')[0] || null;
     let text = message ? textOf(message) : "";
     if (!text) {

@@ -304,6 +304,23 @@ describe("groupFeedScript on the October 2026 front end", () => {
     ]);
     expect(snapshot.posts[1]!.url).toBe("https://www.facebook.com/groups/dataminers/posts/2446779445731099/");
   });
+
+  it("names an anonymous post's author from its header, and never takes a commenter for it", async () => {
+    page("https://www.facebook.com/groups/automationandwebscraping/?sorting_setting=CHRONOLOGICAL", `
+      <div role="feed">
+        <div class="anonymous-post">
+          <div data-ad-rendering-role="profile_name"><h2><span>Anonymous participant</span></h2></div>
+          <a href="https://www.facebook.com/groups/automationandwebscraping/posts/1033164786512127/">5h</a>
+          <div data-ad-rendering-role="story_message"><div data-ad-preview="message"><h3><strong>Need solution..! please help anyone</strong></h3><div dir="auto">Getting 429 errors after every IP change</div></div></div>
+          <div role="article" aria-label="Comment by Ritesh Patel">
+            <a href="/groups/202542189574395/user/100007304474077/">Ritesh Patel</a>
+            <div dir="auto">Try a slower request rate</div>
+          </div>
+        </div>
+      </div>`);
+    const [post] = (await runAsync<FeedSnapshot>(groupFeedScript())).posts;
+    expect([post!.id, post!.author, post!.author_id, post!.author_url]).toEqual(["1033164786512127", "Anonymous participant", "", ""]);
+  });
 });
 
 describe("identityScript", () => {
