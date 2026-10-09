@@ -67,7 +67,14 @@ export async function loadPage(
   await browser.open(url);
   await browser.waitForLoad(LOAD_WAIT_SECONDS).catch(() => undefined);
   await waitForElement(browser, readySelector, options.readyMs ?? READY_WAIT_MS, options.sleep, now);
-  const health = await browser.evaluate<PageHealth>(pageHealthScript(), "health");
+  let health = await browser.evaluate<PageHealth>(pageHealthScript(), "health");
+  if (health.hidden && browser.bringToFront) {
+    // A hidden page gets its first post drawn and no more; brought to the
+    // front, it loads the feed as it is scrolled (live, 2026-10-09).
+    await browser.bringToFront().catch((error: unknown) => options.log("front_failed", { error: String(error) }));
+    health = await browser.evaluate<PageHealth>(pageHealthScript(), "health");
+    options.log("brought_to_front", { url: health.url, hidden: health.hidden === true });
+  }
   options.log("page", {
     wanted: url,
     url: health.url,

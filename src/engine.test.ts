@@ -70,7 +70,9 @@ describe("the first pass", () => {
 
     expect(types(events)).toEqual(["signed_in"]);
     expect(events[0]).toEqual({ type: "signed_in", at: NOON, name: "Dana Reyes", id: "100001" });
-    expect(summary).toMatchObject({ signedIn: true, account: "Dana Reyes", groupsRead: 1, baselines: 1, newItems: 0, commentReads: 0, scrolls: 0 });
+    expect(summary).toMatchObject({ signedIn: true, account: "Dana Reyes", groupsRead: 1, baselines: 1, newItems: 0, commentReads: 0 });
+    // A first read scrolls a little for the matches it lists, never more.
+    expect(summary.scrolls).toBeLessThanOrEqual(2);
     expect(state.sources["group:acme.users"]).toMatchObject({ since: NOON, name: "Acme Users" });
     expect(state.seen).toEqual([`post:${question.id}`, `post:${older.id}`]);
     // The keyword post is watched from here on, at the count it has now.
@@ -78,6 +80,21 @@ describe("the first pass", () => {
     // The dashboard still gets what matched.
     expect(matches.map((match) => match.item.text)).toEqual(["Has anyone tried Acme for team billing?"]);
     expect(fb.opened).toEqual([feedUrl(GROUP), "about:blank"]);
+  });
+
+  it("scrolls a little on a first read, so matches below the first posts are listed", async () => {
+    fb.pageSize = 1;
+    const { matches, events, summary } = await pass(watching());
+    expect(summary.scrolls).toBeGreaterThan(0);
+    expect(matches.map((match) => match.item.text)).toContain("Has anyone tried Acme for team billing?");
+    expect(types(events)).toEqual(["signed_in"]);
+  });
+
+  it("brings a hidden profile window to the front once, so the feed loads", async () => {
+    fb.hidden = true;
+    const { matches } = await pass(watching());
+    expect(fb.broughtToFront).toBe(1);
+    expect(matches.map((match) => match.item.text)).toContain("Has anyone tried Acme for team billing?");
   });
 
   it("never mutates the state it was given", async () => {
@@ -128,11 +145,12 @@ describe("new posts", () => {
     fb.pageSize = 2;
     const deep = rawPost(GROUP, "Old Timer", "acme was great in 2019");
     fb.groups[GROUP]!.posts.push(deep);
-    const first = await pass(watching());
+    // The first read does not scroll here, so the deep post stays unseen.
+    const first = await pass(watching({ maxScrolls: 0 }));
     expect(first.state.seen).not.toContain(`post:${deep.id}`);
     later();
     publish(GROUP, rawPost(GROUP, "Ana Lima", "acme or the other one?"), rawPost(GROUP, "Bo Chen", "acme export is broken"));
-    const { events, summary } = await pass(first.state);
+    const { events, summary } = await pass(withSettings(first.state, { maxScrolls: 5 }));
 
     // Both new posts sit above the newest post the first pass saw. The old
     // one the first pass never scrolled to sits below it: not new.

@@ -22,4 +22,9 @@ export interface MonitorBrowser {
   evaluate<T>(script: string, label?: string): Promise<T>;
   /** Wait until the active page finishes loading. */
   waitForLoad(timeoutSeconds?: number): Promise<void>;
+  /** Bring the active tab to the front. Facebook loads a group's feed only
+   *  while its page is visible: in a profile window hidden behind others it
+   *  draws the first post and nothing more as it is scrolled. Optional; the
+   *  monitor reads less without it. */
+  bringToFront?(): Promise<void>;
 }

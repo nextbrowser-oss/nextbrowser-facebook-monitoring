@@ -30,7 +30,13 @@ describe("the core", () => {
   it("never acts on facebook.com: nothing is clicked, typed, submitted or fetched", async () => {
     const text = await readFile(join(SRC, "scripts.ts"), "utf8");
     expect(text).not.toMatch(/\.click\(/);
-    expect(text).not.toMatch(/\.submit\(|requestSubmit|dispatchEvent|\.focus\(/);
+    expect(text).not.toMatch(/\.submit\(|requestSubmit|\.focus\(/);
+    // The one event a script sends is the pointer passing over a time link,
+    // which is when Facebook writes the post's address into it: no click, no
+    // focus change, nothing the page acts on.
+    const events = [...text.matchAll(/dispatchEvent\(new (\w+)\("([\w-]+)"/g)].map((match) => `${match[1]}:${match[2]}`);
+    expect(events.length).toBe(text.match(/dispatchEvent/g)?.length ?? 0);
+    expect(new Set(events)).toEqual(new Set(["MouseEvent:mouseover", "FocusEvent:focusin"]));
     expect(text).not.toMatch(/\bfetch\(|XMLHttpRequest/);
     expect(text).not.toMatch(/\.value\s*=/);
   });

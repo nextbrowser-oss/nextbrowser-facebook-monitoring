@@ -216,6 +216,11 @@ export function nbcBrowser(options: NbcOptions): NbcBrowser {
     async waitForLoad(timeoutSeconds = 15) {
       await call(["wait", "--load", "--timeout", `${timeoutSeconds}s`], (timeoutSeconds * 1000) + timeoutMs);
     },
+    async bringToFront() {
+      const listed = await call<{ tabs?: { id?: string; current?: boolean; active?: boolean }[] }>(["tabs", "list"]);
+      const tab = (listed?.tabs ?? []).find((item) => item.current) ?? (listed?.tabs ?? []).find((item) => item.active);
+      if (tab?.id) await call(["tabs", "activate", tab.id]);
+    },
     async start() {
       if (await running()) {
         // "Running" is read from the session's state file, and a browser that

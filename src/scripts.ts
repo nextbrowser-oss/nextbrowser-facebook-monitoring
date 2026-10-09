@@ -41,6 +41,12 @@ export const SIGN_IN_URL = "https://www.facebook.com/";
 
 /** What a group page draws once Facebook has answered: a post in the feed. */
 export const FEED_READY_SELECTOR = `[role="feed"] [role="article"], [role="feed"] [aria-posinset]`;
+/** What a drawn post holds, whatever wraps it: its message or its author's
+ *  link inside the group. */
+export const POST_CONTENT_SELECTOR = `[data-ad-preview="message"], [data-ad-comet-preview="message"], a[href*="/groups/"][href*="/user/"]`;
+/** How long the read waits for Facebook to write the permalinks it was
+ *  pointed at; 400 ms was enough live, 0 was not. */
+const REVEAL_WAIT_MS = 600;
 /** What m.facebook.com's server-drawn group page holds: articles, and links
  *  to full stories. */
 export const MOBILE_READY_SELECTOR = `article, [data-ft*="top_level_post_id"], a[href*="/story.php"], a[href*="/permalink/"]`;
@@ -246,6 +252,9 @@ export interface PageHealth {
   feed: boolean;
   articles: number;
   gate: Gate;
+  /** The page is not visible (document.visibilityState), which is how a
+   *  profile window behind other windows reads. */
+  hidden?: boolean;
   diag?: PageDiag;
 }
 
@@ -264,7 +273,8 @@ export function pageHealthScript(): string {
     rendered: feed || articles > 0,
     feed: feed,
     articles: articles,
-    gate: state
+    gate: state,
+    hidden: document.visibilityState === "hidden"
   };
   if (!out.rendered || gated(state)) out.diag = pageDiag();
   return out;
@@ -307,7 +317,7 @@ export function identityScript(): string {
   if (id) {
     const links = Array.from(document.querySelectorAll('a[href*="profile.php?id=' + id + '"], a[href*="/user/' + id + '/"]'));
     for (const link of links) {
-      const label = clean(link.getAttribute("aria-label") || link.innerText || link.textContent);
+      const label = clean(link.getAttribute("aria-label") || link.innerText || link.textContent).replace(/[’']s profile$/i, "").trim();
       if (usable(label)) { name = label; break; }
     }
   }
@@ -372,10 +382,17 @@ export interface FeedSnapshot {
  *  page title ("(3) Acme Users | Facebook"). */
 const GROUP_NAME_HELPER = String.raw`
   const groupName = () => {
+    // The tab title names the group ("(1) Web Scraping World | Facebook"). A
+    // bare h1 is not safe: the hidden notifications panel draws its own
+    // "Notifications" h1 first, which became the group's name (2026-10-09).
+    const title = String(document.title || "");
+    if (/[|·-]\s*Facebook\s*$/i.test(title)) {
+      const fromTitle = title.replace(/^\(\d+\+?\)\s*/, "").replace(/\s*[|·-]\s*Facebook\s*$/i, "").trim();
+      if (fromTitle && !/^facebook$/i.test(fromTitle)) return fromTitle.slice(0, 120);
+    }
     const header = document.querySelector('[role="main"] h1 a[href*="/groups/"], h1 a[href*="/groups/"], [role="main"] h1, h1');
     const fromHeader = header ? String(header.innerText || header.textContent || "").replace(/\s+/g, " ").trim() : "";
-    if (fromHeader) return fromHeader.slice(0, 120);
-    return String(document.title || "").replace(/^\(\d+\+?\)\s*/, "").replace(/\s*[|·-]\s*Facebook\s*$/i, "").trim().slice(0, 120);
+    return fromHeader.slice(0, 120);
   };`;
 
 /** groupFeedScript reads the posts a www.facebook.com group page has drawn,
@@ -385,11 +402,29 @@ const GROUP_NAME_HELPER = String.raw`
  *  a [role="article"] of its own: everything read for the post is read
  *  outside those, so a commenter is never taken for the author. */
 export function groupFeedScript(): string {
-  return String.raw`(() => {${GATE_HELPER}${DIAG_HELPER}${LINK_HELPER}${GROUP_NAME_HELPER}
+  return String.raw`(async () => {${GATE_HELPER}${DIAG_HELPER}${LINK_HELPER}${GROUP_NAME_HELPER}
   const out = { url: location.href, gate: gate(), feed: has('[role="feed"]'), group_name: groupName(), posts: [] };
   const isComment = (node) => /^(comment|reply) by /i.test(node.getAttribute("aria-label") || "");
   const all = Array.from(document.querySelectorAll(${jsLiteral(FEED_READY_SELECTOR)})).filter((node) => !isComment(node));
-  const units = all.filter((node) => !all.some((other) => other !== node && other.contains(node)));
+  const legacy = all.filter((node) => !all.some((other) => other !== node && other.contains(node)));
+  // Since October 2026 a post is a plain child of the feed with no article
+  // role; the articles left in the feed are empty loading placeholders.
+  const drawn = Array.from(document.querySelectorAll('[role="feed"] > *')).filter((node) => node.querySelector(${jsLiteral(POST_CONTENT_SELECTOR)}));
+  const units = drawn.concat(legacy.filter((node) => !drawn.some((child) => child.contains(node) || node.contains(child))));
+  // The time link that is a post's permalink carries only "?__cft__…" until
+  // the pointer is over it; Facebook writes the real address then. Each one
+  // is pointed at, and the read waits for the addresses to land.
+  let pointed = 0;
+  for (const unit of units) {
+    for (const link of Array.from(unit.querySelectorAll("a[href]"))) {
+      if (!/^[?#]/.test(String(link.getAttribute("href") || ""))) continue;
+      link.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      link.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      pointed += 1;
+    }
+  }
+  if (pointed > 0) await new Promise((resolve) => setTimeout(resolve, ${REVEAL_WAIT_MS}));
+  const pageGroup = (/^\/groups\/([^/?#]+)/.exec(location.pathname) || [])[1] || "";
   // The post itself is the unit, or the first article inside it that is not
   // a comment; anything inside a further article below it is a comment.
   const rootOf = (unit) => unit.getAttribute("role") === "article" ? unit
@@ -417,6 +452,18 @@ export function groupFeedScript(): string {
       if (found.id !== first.found.id) continue;
       const label = labelOf(link);
       if (!timeText && label && label.length <= 40) timeText = label;
+    }
+    if (!first) {
+      // A photo post names its post in the photo link's set=gm.<id>.
+      for (const link of own(root, 'a[href*="set=gm."]')) {
+        const gm = /[?&]set=gm\.(\d{1,25})/.exec(String(link.getAttribute("href") || ""));
+        if (gm && pageGroup) {
+          const href = "https://www.facebook.com/groups/" + pageGroup + "/posts/" + gm[1] + "/";
+          first = { found: { group: pageGroup, id: gm[1] }, href: href };
+          numeric = first;
+          break;
+        }
+      }
     }
     if (!first) continue;
     const permalink = numeric || first;

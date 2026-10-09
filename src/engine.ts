@@ -74,6 +74,9 @@ const BLANK_PAGE = "about:blank";
  *  in ground the last pass covered. One is usually enough in a chronological
  *  feed; three keeps a single post Facebook drew out of order from ending the
  *  read early. */
+/** How far a group's first read scrolls: it announces nothing, but the
+ *  matches it lists are what the panel shows after Start. */
+const BASELINE_SCROLLS = 2;
 const KNOWN_TO_STOP = 3;
 /** How many scrolls in a row may bring nothing before the feed is taken to
  *  have ended. */
@@ -413,11 +416,23 @@ class Pass {
         this.groupFailed(key, id, `You are not a member of ${name ?? `group ${id}`}: join it from this account, or remove it from the list.`);
         return;
       }
-      const snapshot = await this.browser.evaluate<FeedSnapshot>(mobileGroupScript(), "mobile-feed");
-      this.checkGate(snapshot.gate);
-      readAt = this.now();
-      name = name || snapshot.group_name || undefined;
-      posts = normalizePosts(snapshot.posts ?? [], groupContext(id, name), readAt);
+      let snapshot: FeedSnapshot;
+      const redirected = page.host === "www";
+      if (redirected) {
+        // m.facebook.com sends a desktop browser back to www.facebook.com
+        // (?_rdr): the mobile reader finds nothing there, the www one may.
+        const again = await this.collect(key, groupContext(id, name));
+        snapshot = { url: page.url, gate: page.gate, feed: true, group_name: again.name, posts: [] };
+        readAt = again.readAt;
+        name = name || again.name || undefined;
+        posts = again.posts;
+      } else {
+        snapshot = await this.browser.evaluate<FeedSnapshot>(mobileGroupScript(), "mobile-feed");
+        this.checkGate(snapshot.gate);
+        readAt = this.now();
+        name = name || snapshot.group_name || undefined;
+        posts = normalizePosts(snapshot.posts ?? [], groupContext(id, name), readAt);
+      }
       if (posts.length === 0) {
         this.log("group_unreadable", { group: id, www_unavailable: wwwUnavailable, mobile: page, diag: snapshot.diag });
         const label = name ?? `group ${id}`;
@@ -426,9 +441,11 @@ class Pass {
           : `${label} could not be read this pass: Facebook drew no posts on www.facebook.com or m.facebook.com.`);
         return;
       }
-      fallback = true;
-      this.summary.fallbacks += 1;
-      this.note(`${name ?? `Group ${id}`} was read through m.facebook.com: www.facebook.com drew no posts.`);
+      if (!redirected) {
+        fallback = true;
+        this.summary.fallbacks += 1;
+        this.note(`${name ?? `Group ${id}`} was read through m.facebook.com: www.facebook.com drew no posts.`);
+      }
     }
     this.summary.groupsRead += 1;
     await this.consider(key, groupContext(id, name), posts, readAt, fallback);
@@ -458,8 +475,11 @@ class Pass {
         posts.push(post);
       }
       if (posts.length === 0 && snapshot.diag) this.log("feed_empty_read", { url: snapshot.url, diag: snapshot.diag });
-      if (baseline || posts.length === 0) break;
-      if (posts.filter((post) => this.seenBeforePass(post)).length >= KNOWN_TO_STOP) break;
+      if (posts.length === 0) break;
+      // A first read announces nothing, but the panel lists what matched, and
+      // a group page draws only a post or two before it is scrolled.
+      if (baseline && scrolls >= Math.min(BASELINE_SCROLLS, this.state.settings.maxScrolls)) break;
+      if (!baseline && posts.filter((post) => this.seenBeforePass(post)).length >= KNOWN_TO_STOP) break;
       if (scrolls >= this.state.settings.maxScrolls) break;
       this.checkStop();
       const scroll = await this.browser.evaluate<ScrollState>(scrollScript(), "scroll");

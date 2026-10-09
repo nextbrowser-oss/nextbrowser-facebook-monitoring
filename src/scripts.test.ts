@@ -28,6 +28,12 @@ import {
   type ThreadSnapshot,
 } from "./scripts.js";
 
+/** runAsync is run for a script that returns a promise, as Runtime.evaluate
+ *  with awaitPromise does. */
+async function runAsync<T>(script: string): Promise<T> {
+  return JSON.parse(JSON.stringify(await (0, eval)(script))) as T;
+}
+
 function run<T>(script: string): T {
   // Indirect eval: the script runs in the page's global scope, as it would in
   // Runtime.evaluate, and comes back through JSON as it would over CDP.
@@ -140,9 +146,9 @@ describe("every script", () => {
 });
 
 describe("groupFeedScript", () => {
-  it("reads each post's id, author, text, time, tags and counts, outside its comment preview", () => {
+  it("reads each post's id, author, text, time, tags and counts, outside its comment preview", async () => {
     page(GROUP_URL, WWW_FEED);
-    const snapshot = run<FeedSnapshot>(groupFeedScript());
+    const snapshot = await runAsync<FeedSnapshot>(groupFeedScript());
     expect(snapshot).toMatchObject({ feed: true, group_name: "Acme Users" });
     expect(snapshot.gate).toEqual({ login_wall: false, checkpoint: false, blocked: "", unavailable: false, not_member: false });
     expect(snapshot.posts).toHaveLength(2);
@@ -178,7 +184,7 @@ describe("groupFeedScript", () => {
     });
   });
 
-  it("keys a post by its numeric id when the page links it beside a pfbid one, and keeps the pfbid as an alias", () => {
+  it("keys a post by its numeric id when the page links it beside a pfbid one, and keeps the pfbid as an alias", async () => {
     page(GROUP_URL, `${CHROME}<div role="main"><div role="feed">
       <div role="article">
         <h3><a href="https://www.facebook.com/profile.php?id=100400">Lee Park</a></h3>
@@ -192,14 +198,14 @@ describe("groupFeedScript", () => {
         <div data-ad-preview="message"><div dir="auto">only a pfbid</div></div>
       </div>
     </div></div>`);
-    const [both, only] = run<FeedSnapshot>(groupFeedScript()).posts;
+    const [both, only] = (await runAsync<FeedSnapshot>(groupFeedScript())).posts;
     expect(both).toMatchObject({ id: "7199999999999999", alt_id: "pfbid02AbCdEfGhIjKlMnOp", time_text: "2h", group: "acme.users" });
     expect(only).toMatchObject({ id: "pfbid02ZyXwVuTsRqPoNmLk", alt_id: "", time_text: "5m" });
   });
 
-  it("reads nothing, and says why, on a page with no feed", () => {
+  it("reads nothing, and says why, on a page with no feed", async () => {
     page(GROUP_URL, `${CHROME}<div role="main"><span>Loading…</span></div>`);
-    const snapshot = run<FeedSnapshot>(groupFeedScript());
+    const snapshot = await runAsync<FeedSnapshot>(groupFeedScript());
     expect(snapshot).toMatchObject({ feed: false, posts: [] });
     expect(snapshot.diag?.feeds).toBe(0);
   });
@@ -263,7 +269,50 @@ describe("threadScript", () => {
   });
 });
 
+// As captured live on 2026-10-09: a post is a plain child of the feed (the
+// articles left there are empty placeholders), its time link carries only
+// "?__cft__…" until the pointer is over it, and a hidden notifications panel
+// draws an h1 before the group's own.
+const OCT_2026_FEED = `
+  <div role="complementary"><h1>Notifications</h1></div>
+  <div role="feed">
+    <div><div role="article"></div></div>
+    <div class="post">
+      <h3><a href="/groups/536969943378658/user/679764754/?__cft__[0]=x">Wojciech Zeglin</a></h3>
+      <a class="time" href="?__cft__[0]=AZgub" role="link">s͏o͏p͏</a>
+      <div data-ad-preview="message"><div dir="auto">Anyone know a proxy that works for scraping?</div></div>
+    </div>
+    <div class="photo-post">
+      <h3><a href="/groups/536969943378658/user/100002/">Ana Lima</a></h3>
+      <a href="https://www.facebook.com/photo/?fbid=101&amp;set=gm.2446779445731099&amp;idorvanity=536969943378658">photo</a>
+      <div data-ad-preview="message"><div dir="auto">Our scraping setup</div></div>
+    </div>
+  </div>`;
+
+describe("groupFeedScript on the October 2026 front end", () => {
+  it("reads feed children, points at the hidden time link for its address, and takes a photo post's id from set=gm.", async () => {
+    page("https://www.facebook.com/groups/dataminers/?sorting_setting=CHRONOLOGICAL", OCT_2026_FEED);
+    document.title = "(1) Web Scraping World | Facebook";
+    // Facebook writes the address when the pointer is over the link.
+    const time = document.querySelector("a.time")!;
+    time.addEventListener("mouseover", () => time.setAttribute("href", "https://www.facebook.com/groups/dataminers/posts/2446779445731022/?__cft__[0]=AZgub"));
+    const snapshot = await runAsync<FeedSnapshot>(groupFeedScript());
+    expect(snapshot.group_name).toBe("Web Scraping World");
+    expect(snapshot.posts.map((post) => [post.id, post.author, post.text])).toEqual([
+      ["2446779445731022", "Wojciech Zeglin", "Anyone know a proxy that works for scraping?"],
+      ["2446779445731099", "Ana Lima", "Our scraping setup"],
+    ]);
+    expect(snapshot.posts[1]!.url).toBe("https://www.facebook.com/groups/dataminers/posts/2446779445731099/");
+  });
+});
+
 describe("identityScript", () => {
+  it("drops the \"'s profile\" a profile link's label adds to the name", () => {
+    page(GROUP_URL, `<a aria-label="Dana Reyes's profile" href="/groups/acme.users/user/100001/">x</a>`);
+    document.cookie = "c_user=100001";
+    expect(run<IdentitySnapshot>(identityScript())).toMatchObject({ id: "100001", name: "Dana Reyes" });
+  });
+
   it("takes the id from the session cookie and the name from a link to that id", () => {
     page(GROUP_URL, WWW_FEED);
     document.cookie = "c_user=100001";
@@ -308,7 +357,7 @@ describe("the screens in front of a group", () => {
     expect(health().gate.blocked).toBe("You can't use this feature right now");
   });
 
-  it("does not take a post or a comment that quotes a block notice for the block", () => {
+  it("does not take a post or a comment that quotes a block notice for the block", async () => {
     page(GROUP_URL, `${CHROME}<div role="main"><div role="feed">
       <div role="article"><h3><a href="https://www.facebook.com/profile.php?id=100400">Lee Park</a></h3>
         <a href="https://www.facebook.com/groups/acme.users/posts/7100000000000009/">1h</a>
@@ -318,7 +367,7 @@ describe("the screens in front of a group", () => {
       <div aria-posinset="2"><div dir="auto">Your account has been restricted, they told me</div></div>
     </div></div>`);
     expect(health().gate.blocked).toBe("");
-    expect(run<FeedSnapshot>(groupFeedScript()).gate.blocked).toBe("");
+    expect((await runAsync<FeedSnapshot>(groupFeedScript())).gate.blocked).toBe("");
     page("https://www.facebook.com/groups/acme.users/posts/7100000000000009/", `${CHROME}<div role="main">
       <div data-ad-comet-preview="message"><div dir="auto">FYI: "You're Temporarily Blocked" means wait a day</div></div></div>`);
     expect(run<ThreadSnapshot>(threadScript()).gate.blocked).toBe("");

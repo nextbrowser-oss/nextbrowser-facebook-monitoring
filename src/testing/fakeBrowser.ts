@@ -40,6 +40,9 @@ export class FakeFacebook implements MonitorBrowser {
   comments: Record<string, RawComment[]> = {};
   pageSize = 4;
   scrolled = 0;
+  /** The profile window sits behind others until it is brought to the front. */
+  hidden = false;
+  broughtToFront = 0;
   readonly opened: string[] = [];
   readonly labels: string[] = [];
 
@@ -50,6 +53,11 @@ export class FakeFacebook implements MonitorBrowser {
   }
 
   async waitForLoad(): Promise<void> {}
+
+  async bringToFront(): Promise<void> {
+    this.broughtToFront += 1;
+    this.hidden = false;
+  }
 
   async evaluate<T>(_script: string, label = ""): Promise<T> {
     this.labels.push(label);
@@ -109,6 +117,7 @@ export class FakeFacebook implements MonitorBrowser {
           feed,
           articles: posts.length,
           gate,
+          hidden: this.hidden,
         } satisfies PageHealth;
       }
       case "identity": {
